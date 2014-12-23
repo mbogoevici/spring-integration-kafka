@@ -47,15 +47,25 @@ public class QueueingMessageListenerInvoker implements Runnable, Lifecycle {
 		this.messages = new ArrayBlockingQueue<KafkaMessage>(capacity, true);
 	}
 
-	public void enqueue(KafkaMessage message) {
-		try {
-			this.messages.put(message);
-		}
-		catch (InterruptedException e) {
-			Thread.currentThread().interrupt();
-			if (this.isRunning()) {
-				this.enqueue(message);
+	public boolean enqueue(KafkaMessage message) {
+		if (this.running) {
+			boolean addedSuccessfully = false;
+			do {
+				try {
+					this.messages.put(message);
+					addedSuccessfully = true;
+				}
+				catch (InterruptedException e) {
+					if (!this.running) {
+						Thread.currentThread().interrupt();
+					}
+				}
 			}
+			while (!addedSuccessfully || !this.running);
+			return addedSuccessfully;
+		}
+		else {
+			return false;
 		}
 	}
 

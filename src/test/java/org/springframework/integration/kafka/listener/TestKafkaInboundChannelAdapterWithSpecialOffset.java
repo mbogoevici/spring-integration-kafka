@@ -72,7 +72,7 @@ public class TestKafkaInboundChannelAdapterWithSpecialOffset extends AbstractMes
 	public void testLowVolumeLowConcurrency() throws Exception {
 
 		// we will send 300 messages: first 200, then another 100
-		// we will start reading from all partitions at offset 100
+		// we will start reading from all partitions at offset 20 (which leaves the first 100 out)
 		int expectedMessageCount = 200;
 
 		createTopic(TEST_TOPIC, 5, 1, 1);

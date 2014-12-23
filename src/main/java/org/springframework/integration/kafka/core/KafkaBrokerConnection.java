@@ -131,10 +131,14 @@ public class KafkaBrokerConnection {
 				ByteBufferMessageSet messageSet = fetchResponse.messageSet(partition.getTopic(), partition.getId());
 				List<KafkaMessage> kafkaMessages = collect(messageSet, new ConvertToKafkaMessageFunction(request)).toList();
 				long highWatermark = fetchResponse.highWatermark(partition.getTopic(), partition.getId());
-				kafkaResultBuilder.add(partition).withResult(new KafkaMessageBatch(partition, kafkaMessages, highWatermark));
+				kafkaResultBuilder
+						.add(partition)
+						.withResult(new KafkaMessageBatch(partition, kafkaMessages, highWatermark));
 			}
 			else {
-				kafkaResultBuilder.add(partition).withError(errorCode);
+				kafkaResultBuilder
+						.add(partition)
+						.withError(errorCode);
 			}
 		}
 		return kafkaResultBuilder.build();
@@ -175,7 +179,9 @@ public class KafkaBrokerConnection {
 				if (offsets.length == 0) {
 					throw new IllegalStateException("No error has been returned, but no offsets either");
 				}
-				kafkaResultBuilder.add(partition).withResult(offsets[0]);
+				kafkaResultBuilder
+						.add(partition)
+						.withResult(offsets[0]);
 			}
 			else {
 				kafkaResultBuilder.add(partition).withError(errorCode);

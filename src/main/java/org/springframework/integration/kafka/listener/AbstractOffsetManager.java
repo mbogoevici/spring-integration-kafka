@@ -20,6 +20,7 @@ import java.io.IOException;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -30,6 +31,7 @@ import org.springframework.integration.kafka.core.Connection;
 import org.springframework.integration.kafka.core.ConnectionFactory;
 import org.springframework.integration.kafka.core.ConsumerException;
 import org.springframework.integration.kafka.core.KafkaConsumerDefaults;
+import org.springframework.integration.kafka.core.KafkaMessage;
 import org.springframework.integration.kafka.core.Partition;
 import org.springframework.integration.kafka.core.PartitionNotFoundException;
 import org.springframework.integration.kafka.core.Result;
@@ -53,6 +55,8 @@ public abstract class AbstractOffsetManager implements OffsetManager, Disposable
 	protected ConnectionFactory connectionFactory;
 
 	protected Map<Partition, Long> initialOffsets;
+
+	protected Map<Partition, Long> highestUpdatedOffsets = new ConcurrentHashMap<Partition, Long>();
 
 	public AbstractOffsetManager(ConnectionFactory connectionFactory) {
 		this(connectionFactory, new HashMap<Partition, Long>());
@@ -108,7 +112,11 @@ public abstract class AbstractOffsetManager implements OffsetManager, Disposable
 	 */
 	@Override
 	public synchronized final void updateOffset(Partition partition, long offset) {
-		doUpdateOffset(partition, offset);
+		Long highestUpdatedOffset = this.highestUpdatedOffsets.get(partition);
+		if (highestUpdatedOffset == null || highestUpdatedOffset < offset) {
+			highestUpdatedOffsets.put(partition, offset);
+			doUpdateOffset(partition, offset);
+		}
 	}
 
 	/**
@@ -148,6 +156,7 @@ public abstract class AbstractOffsetManager implements OffsetManager, Disposable
 		for (Partition partition : partitionsToReset) {
 			doRemoveOffset(partition);
 			this.initialOffsets.remove(partition);
+			this.highestUpdatedOffsets.remove(partition);
 		}
 	}
 

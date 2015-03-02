@@ -40,11 +40,14 @@ class QueueingMessageListenerInvoker implements Runnable, Lifecycle {
 
 	private final ErrorHandler errorHandler;
 
+	private final boolean autoCommitOffset;
+
 	public QueueingMessageListenerInvoker(int capacity, OffsetManager offsetManager, MessageListener delegate,
-			ErrorHandler errorHandler) {
+			ErrorHandler errorHandler, boolean autoCommitOffset) {
 		this.offsetManager = offsetManager;
 		this.delegate = delegate;
 		this.errorHandler = errorHandler;
+		this.autoCommitOffset = autoCommitOffset;
 		this.messages = new ArrayBlockingQueue<KafkaMessage>(capacity, true);
 	}
 
@@ -110,8 +113,10 @@ class QueueingMessageListenerInvoker implements Runnable, Lifecycle {
 					}
 				}
 				finally {
-					offsetManager.updateOffset(message.getMetadata().getPartition(),
-							message.getMetadata().getNextOffset());
+					if (autoCommitOffset) {
+						offsetManager.updateOffset(message.getMetadata().getPartition(),
+								message.getMetadata().getNextOffset());
+					}
 				}
 			}
 			catch (InterruptedException e) {

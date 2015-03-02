@@ -105,6 +105,8 @@ public class KafkaMessageListenerContainer implements SmartLifecycle {
 
 	private int queueSize = 1024;
 
+	private boolean autoCommitOffset = true;
+
 	private MessageListener messageListener;
 
 	private ErrorHandler errorHandler = new LoggingErrorHandler();
@@ -218,6 +220,15 @@ public class KafkaMessageListenerContainer implements SmartLifecycle {
 		this.maxFetch = maxFetch;
 	}
 
+	/**
+	 * Controls whether the offsets should be automatically updated after a message has been processed.
+	 *
+	 * @param autoCommitOffset
+	 */
+	public void setAutoCommitOffset(boolean autoCommitOffset) {
+		this.autoCommitOffset = autoCommitOffset;
+	}
+
 	@Override
 	public boolean isAutoStartup() {
 		return autoStartup;
@@ -261,7 +272,7 @@ public class KafkaMessageListenerContainer implements SmartLifecycle {
 				ImmutableList<Partition> partitionsAsList = Lists.immutable.with(partitions);
 				this.fetchOffsets = new ConcurrentHashMap<Partition, Long>(partitionsAsList.toMap(passThru, getOffset));
 				this.messageDispatcher = new ConcurrentMessageListenerDispatcher(messageListener, errorHandler,
-						Arrays.asList(partitions), offsetManager, concurrency, queueSize);
+						Arrays.asList(partitions), offsetManager, concurrency, queueSize, autoCommitOffset);
 				this.messageDispatcher.start();
 				partitionsByBrokerMap.putAll(partitionsAsList.groupBy(getLeader));
 				if (fetchTaskExecutor == null) {

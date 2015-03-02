@@ -66,10 +66,13 @@ class ConcurrentMessageListenerDispatcher implements Lifecycle {
 
 	private final int queueSize;
 
+	private final boolean autoCommitOffset;
+
 	private Executor taskExecutor;
 
 	public ConcurrentMessageListenerDispatcher(MessageListener delegateListener, ErrorHandler errorHandler,
-			Collection<Partition> partitions, OffsetManager offsetManager, int consumers, int queueSize) {
+			Collection<Partition> partitions, OffsetManager offsetManager, int consumers, int queueSize, boolean autoCommitOffset) {
+		this.autoCommitOffset = autoCommitOffset;
 		Assert.notEmpty(partitions, "A set of partitions must be provided");
 		Assert.isTrue(consumers <= partitions.size(),
 				"The number of consumers must be smaller or equal to the number of partitions");
@@ -116,7 +119,7 @@ class ConcurrentMessageListenerDispatcher implements Lifecycle {
 		List<QueueingMessageListenerInvoker> delegateList = new ArrayList<QueueingMessageListenerInvoker>(consumers);
 		for (int i = 0; i < consumers; i++) {
 			QueueingMessageListenerInvoker blockingQueueMessageListenerInvoker =
-					new QueueingMessageListenerInvoker(queueSize, offsetManager, delegateListener, errorHandler);
+					new QueueingMessageListenerInvoker(queueSize, offsetManager, delegateListener, errorHandler, autoCommitOffset);
 			delegateList.add(blockingQueueMessageListenerInvoker);
 		}
 		// evenly distribute partitions across delegates

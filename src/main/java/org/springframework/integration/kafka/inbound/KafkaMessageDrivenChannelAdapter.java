@@ -23,10 +23,11 @@ import org.springframework.integration.context.OrderlyShutdownCapable;
 import org.springframework.integration.endpoint.MessageProducerSupport;
 import org.springframework.integration.kafka.core.KafkaMessageMetadata;
 import org.springframework.integration.kafka.listener.AbstractDecodingMessageListener;
+import org.springframework.integration.kafka.listener.DefaultAcknowdledgment;
 import org.springframework.integration.kafka.listener.KafkaMessageListenerContainer;
 import org.springframework.integration.kafka.support.KafkaHeaders;
+import org.springframework.integration.support.AbstractIntegrationMessageBuilder;
 import org.springframework.messaging.Message;
-import org.springframework.messaging.support.MessageBuilder;
 import org.springframework.util.Assert;
 
 /**
@@ -39,6 +40,8 @@ public class KafkaMessageDrivenChannelAdapter extends MessageProducerSupport imp
 	private Decoder<?> keyDecoder = new DefaultDecoder(null);
 
 	private Decoder<?> payloadDecoder = new DefaultDecoder(null);
+
+	private boolean autoCommitOffset = true;
 
 	public KafkaMessageDrivenChannelAdapter(KafkaMessageListenerContainer messageListenerContainer) {
 		Assert.notNull(messageListenerContainer);
@@ -55,8 +58,13 @@ public class KafkaMessageDrivenChannelAdapter extends MessageProducerSupport imp
 		this.payloadDecoder = payloadDecoder;
 	}
 
+	public void setAutoCommitOffset(boolean autoCommitOffset) {
+		this.autoCommitOffset = autoCommitOffset;
+	}
+
 	@Override
 	protected void onInit() {
+		this.messageListenerContainer.setAutoCommitOffset(autoCommitOffset);
 		this.messageListenerContainer.setMessageListener(new ChannelForwardingMessageListener());
 		super.onInit();
 	}
@@ -97,13 +105,20 @@ public class KafkaMessageDrivenChannelAdapter extends MessageProducerSupport imp
 
 		@Override
 		public void doOnMessage(Object key, Object payload, KafkaMessageMetadata metadata) {
-			Message<Object> message = getMessageBuilderFactory()
+			AbstractIntegrationMessageBuilder<Object> messageBuilder = getMessageBuilderFactory()
 					.withPayload(payload)
 					.setHeader(KafkaHeaders.MESSAGE_KEY, key)
 					.setHeader(KafkaHeaders.TOPIC, metadata.getPartition().getTopic())
 					.setHeader(KafkaHeaders.PARTITION_ID, metadata.getPartition().getId())
 					.setHeader(KafkaHeaders.OFFSET, metadata.getOffset())
-					.build();
+					.setHeader(KafkaHeaders.NEXT_OFFSET, metadata.getNextOffset());
+			if (!autoCommitOffset) {
+				messageBuilder
+						.setHeader(KafkaHeaders.ACKNOWLEDGMENT,
+								new DefaultAcknowdledgment(messageListenerContainer.getOffsetManager(),
+										metadata.getPartition(), metadata.getNextOffset()));
+			}
+			Message<Object> message = messageBuilder.build();
 			KafkaMessageDrivenChannelAdapter.this.sendMessage(message);
 		}
 

@@ -56,7 +56,7 @@ class ConcurrentMessageListenerDispatcher implements Lifecycle {
 
 	private volatile boolean running;
 
-	private final MessageListener delegateListener;
+	private final Object delegateListener;
 
 	private final ErrorHandler errorHandler;
 
@@ -70,9 +70,19 @@ class ConcurrentMessageListenerDispatcher implements Lifecycle {
 
 	private Executor taskExecutor;
 
-	public ConcurrentMessageListenerDispatcher(MessageListener delegateListener, ErrorHandler errorHandler,
+	public ConcurrentMessageListenerDispatcher(Object delegateListener, ErrorHandler errorHandler,
 			Collection<Partition> partitions, OffsetManager offsetManager, int consumers, int queueSize, boolean autoCommitOffset) {
 		this.autoCommitOffset = autoCommitOffset;
+		if (autoCommitOffset) {
+			Assert.isTrue(delegateListener instanceof MessageListener,
+					"When automatic offset committing is disabled, a "
+							+ MessageListener.class.getName() + " must be provided");
+		}
+		else {
+			Assert.isTrue(delegateListener instanceof AcknowledgingMessageListener,
+					"When automatic offset committing is disabled, a "
+							+ AcknowledgingMessageListener.class.getName() + " must be provided");
+		}
 		Assert.notEmpty(partitions, "A set of partitions must be provided");
 		Assert.isTrue(consumers <= partitions.size(),
 				"The number of consumers must be smaller or equal to the number of partitions");

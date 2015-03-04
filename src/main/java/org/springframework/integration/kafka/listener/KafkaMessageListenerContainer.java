@@ -46,9 +46,7 @@ import com.gs.collections.impl.block.function.checked.CheckedFunction;
 import com.gs.collections.impl.factory.Lists;
 import com.gs.collections.impl.factory.Multimaps;
 import com.gs.collections.impl.list.mutable.FastList;
-
 import kafka.common.ErrorMapping;
-
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 
@@ -107,7 +105,7 @@ public class KafkaMessageListenerContainer implements SmartLifecycle {
 
 	private boolean autoCommitOffset = true;
 
-	private MessageListener messageListener;
+	private Object messageListener;
 
 	private ErrorHandler errorHandler = new LoggingErrorHandler();
 
@@ -144,12 +142,21 @@ public class KafkaMessageListenerContainer implements SmartLifecycle {
 		this.offsetManager = offsetManager;
 	}
 
-	public MessageListener getMessageListener() {
+	public Object getMessageListener() {
 		return messageListener;
 	}
 
-	public void setMessageListener(MessageListener messageListener) {
-		this.messageListener = messageListener;
+	public void setMessageListener(Object messageListener) {
+		if (autoCommitOffset) {
+			Assert.isTrue(messageListener instanceof MessageListener,
+					"When automatic offset committing is disabled, a "
+							+ MessageListener.class.getName() + " must be provided");
+		}
+		else {
+			Assert.isTrue(messageListener instanceof AcknowledgingMessageListener,
+					"When automatic offset committing is disabled, a "
+							+ AcknowledgingMessageListener.class.getName() + " must be provided");
+		} this.messageListener = messageListener;
 	}
 
 	public ErrorHandler getErrorHandler() {

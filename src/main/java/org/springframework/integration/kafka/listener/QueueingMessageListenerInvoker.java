@@ -21,6 +21,7 @@ import java.util.concurrent.BlockingQueue;
 
 import org.springframework.context.Lifecycle;
 import org.springframework.integration.kafka.core.KafkaMessage;
+import org.springframework.util.Assert;
 
 /**
  * Invokes a delegate {@link MessageListener} for all the messages passed to it, storing them
@@ -34,7 +35,9 @@ class QueueingMessageListenerInvoker implements Runnable, Lifecycle {
 
 	private volatile boolean running = false;
 
-	private final MessageListener delegate;
+	private final MessageListener messageListener;
+
+	private final AcknowledgingMessageListener acknowledgingMessageListener;
 
 	private final OffsetManager offsetManager;
 
@@ -42,10 +45,22 @@ class QueueingMessageListenerInvoker implements Runnable, Lifecycle {
 
 	private final boolean autoCommitOffset;
 
-	public QueueingMessageListenerInvoker(int capacity, OffsetManager offsetManager, MessageListener delegate,
+	public QueueingMessageListenerInvoker(int capacity, OffsetManager offsetManager, Object delegate,
 			ErrorHandler errorHandler, boolean autoCommitOffset) {
+		if (autoCommitOffset) {
+			Assert.isTrue(delegate instanceof MessageListener, "When automatic offset committing is disabled, a " + MessageListener.class.getName() + " must be provided");
+			this.messageListener = (MessageListener) delegate;
+			this.acknowledgingMessageListener = null;
+		}
+		else {
+			Assert.isTrue(delegate instanceof AcknowledgingMessageListener, "When automatic offset committing is disabled, a " + AcknowledgingMessageListener.class.getName() + " must be provided");
+			this.acknowledgingMessageListener = (AcknowledgingMessageListener) delegate;
+			this.messageListener = null;
+		}
+		Assert.isTrue(delegate instanceof MessageListener || delegate instanceof AcknowledgingMessageListener,
+				"Message Listener must be a " + MessageListener.class.getName()
+						+ " or a " + AcknowledgingMessageListener.class.getName());
 		this.offsetManager = offsetManager;
-		this.delegate = delegate;
 		this.errorHandler = errorHandler;
 		this.autoCommitOffset = autoCommitOffset;
 		this.messages = new ArrayBlockingQueue<KafkaMessage>(capacity, true);
@@ -105,7 +120,12 @@ class QueueingMessageListenerInvoker implements Runnable, Lifecycle {
 			try {
 				KafkaMessage message = messages.take();
 				try {
-					delegate.onMessage(message);
+					if (autoCommitOffset) {
+						messageListener.onMessage(message);
+					}
+					else {
+						acknowledgingMessageListener.onMessage(message, new DefaultAcknowdledgment(offsetManager, message));
+					}
 				}
 				catch (Exception e) {
 					if (errorHandler != null) {

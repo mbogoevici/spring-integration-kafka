@@ -16,6 +16,7 @@
 
 package org.springframework.integration.kafka.listener;
 
+import org.springframework.integration.kafka.core.KafkaMessage;
 import org.springframework.integration.kafka.core.Partition;
 
 /**
@@ -36,6 +37,10 @@ public class DefaultAcknowdledgment implements Acknowledgment {
 		this.offsetManager = offsetManager;
 		this.partition = partition;
 		this.offset = offset;
+	}
+
+	public DefaultAcknowdledgment(OffsetManager offsetManager, KafkaMessage message) {
+		this(offsetManager, message.getMetadata().getPartition(), message.getMetadata().getNextOffset());
 	}
 
 	@Override

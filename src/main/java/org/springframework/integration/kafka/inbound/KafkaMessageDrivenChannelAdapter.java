@@ -22,8 +22,9 @@ import kafka.serializer.DefaultDecoder;
 import org.springframework.integration.context.OrderlyShutdownCapable;
 import org.springframework.integration.endpoint.MessageProducerSupport;
 import org.springframework.integration.kafka.core.KafkaMessageMetadata;
+import org.springframework.integration.kafka.listener.AbstractDecodingAcknowledgingMessageListener;
 import org.springframework.integration.kafka.listener.AbstractDecodingMessageListener;
-import org.springframework.integration.kafka.listener.DefaultAcknowdledgment;
+import org.springframework.integration.kafka.listener.Acknowledgment;
 import org.springframework.integration.kafka.listener.KafkaMessageListenerContainer;
 import org.springframework.integration.kafka.support.KafkaHeaders;
 import org.springframework.integration.support.AbstractIntegrationMessageBuilder;
@@ -65,7 +66,9 @@ public class KafkaMessageDrivenChannelAdapter extends MessageProducerSupport imp
 	@Override
 	protected void onInit() {
 		this.messageListenerContainer.setAutoCommitOffset(autoCommitOffset);
-		this.messageListenerContainer.setMessageListener(new ChannelForwardingMessageListener());
+		this.messageListenerContainer.setMessageListener(autoCommitOffset ?
+				new AutoAcknowledgingChannelForwardingMessageListener()
+				: new AcknowledgingChannelForwardingMessageListener());
 		super.onInit();
 	}
 
@@ -96,32 +99,48 @@ public class KafkaMessageDrivenChannelAdapter extends MessageProducerSupport imp
 	}
 
 	@SuppressWarnings("rawtypes")
-	private class ChannelForwardingMessageListener extends AbstractDecodingMessageListener {
+	private class AutoAcknowledgingChannelForwardingMessageListener extends AbstractDecodingMessageListener {
 
 		@SuppressWarnings("unchecked")
-		public ChannelForwardingMessageListener() {
+		public AutoAcknowledgingChannelForwardingMessageListener() {
 			super(keyDecoder, payloadDecoder);
 		}
 
 		@Override
 		public void doOnMessage(Object key, Object payload, KafkaMessageMetadata metadata) {
-			AbstractIntegrationMessageBuilder<Object> messageBuilder = getMessageBuilderFactory()
-					.withPayload(payload)
-					.setHeader(KafkaHeaders.MESSAGE_KEY, key)
-					.setHeader(KafkaHeaders.TOPIC, metadata.getPartition().getTopic())
-					.setHeader(KafkaHeaders.PARTITION_ID, metadata.getPartition().getId())
-					.setHeader(KafkaHeaders.OFFSET, metadata.getOffset())
-					.setHeader(KafkaHeaders.NEXT_OFFSET, metadata.getNextOffset());
-			if (!autoCommitOffset) {
-				messageBuilder
-						.setHeader(KafkaHeaders.ACKNOWLEDGMENT,
-								new DefaultAcknowdledgment(messageListenerContainer.getOffsetManager(),
-										metadata.getPartition(), metadata.getNextOffset()));
-			}
-			Message<Object> message = messageBuilder.build();
-			KafkaMessageDrivenChannelAdapter.this.sendMessage(message);
+			KafkaMessageDrivenChannelAdapter.this.sendMessage(toMessage(key, payload, metadata, null));
 		}
 
+	}
+
+	@SuppressWarnings("rawtypes")
+	private class AcknowledgingChannelForwardingMessageListener extends AbstractDecodingAcknowledgingMessageListener {
+
+		@SuppressWarnings("unchecked")
+		public AcknowledgingChannelForwardingMessageListener() {
+			super(keyDecoder, payloadDecoder);
+		}
+
+		@Override
+		public void doOnMessage(Object key, Object payload, KafkaMessageMetadata metadata, Acknowledgment acknowledgment) {
+			KafkaMessageDrivenChannelAdapter.this.sendMessage(toMessage(key, payload, metadata, acknowledgment));
+		}
+
+	}
+
+
+	private Message<Object> toMessage(Object key, Object payload, KafkaMessageMetadata metadata, Acknowledgment acknowledgment) {
+		AbstractIntegrationMessageBuilder<Object> messageBuilder = getMessageBuilderFactory()
+				.withPayload(payload)
+				.setHeader(KafkaHeaders.MESSAGE_KEY, key)
+				.setHeader(KafkaHeaders.TOPIC, metadata.getPartition().getTopic())
+				.setHeader(KafkaHeaders.PARTITION_ID, metadata.getPartition().getId())
+				.setHeader(KafkaHeaders.OFFSET, metadata.getOffset())
+				.setHeader(KafkaHeaders.NEXT_OFFSET, metadata.getNextOffset());
+		if (acknowledgment != null) {
+			messageBuilder.setHeader(KafkaHeaders.ACKNOWLEDGMENT, acknowledgment);
+		}
+		return messageBuilder.build();
 	}
 
 }

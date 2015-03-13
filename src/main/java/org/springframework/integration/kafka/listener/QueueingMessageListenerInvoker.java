@@ -16,12 +16,11 @@
 
 package org.springframework.integration.kafka.listener;
 
-import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
 
 import org.springframework.context.Lifecycle;
 import org.springframework.integration.kafka.core.KafkaMessage;
-import org.springframework.util.Assert;
 
 /**
  * Invokes a delegate {@link MessageListener} for all the messages passed to it, storing them
@@ -60,7 +59,7 @@ class QueueingMessageListenerInvoker implements Runnable, Lifecycle {
 		}
 		this.offsetManager = offsetManager;
 		this.errorHandler = errorHandler;
-		this.messages = new ArrayBlockingQueue<KafkaMessage>(capacity);
+		this.messages = new LinkedBlockingQueue<KafkaMessage>(capacity);
 	}
 
 	/**

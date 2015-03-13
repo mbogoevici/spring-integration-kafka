@@ -25,9 +25,17 @@ import org.springframework.integration.kafka.listener.Acknowledgment;
 import org.springframework.integration.kafka.listener.KafkaMessageListenerContainer;
 import org.springframework.integration.kafka.support.KafkaHeaders;
 import org.springframework.integration.support.AbstractIntegrationMessageBuilder;
+import org.springframework.integration.support.DefaultMessageBuilderFactory;
+import org.springframework.integration.support.MessageBuilderFactory;
+import org.springframework.integration.support.MutableMessageBuilderFactory;
 import org.springframework.messaging.Message;
+import org.springframework.messaging.MessageHeaders;
+import org.springframework.messaging.support.GenericMessage;
+import org.springframework.messaging.support.MessageHeaderAccessor;
 import org.springframework.util.Assert;
 
+import com.gs.collections.api.map.MutableMap;
+import com.gs.collections.impl.map.mutable.UnifiedMap;
 import kafka.serializer.Decoder;
 import kafka.serializer.DefaultDecoder;
 
@@ -41,6 +49,10 @@ public class KafkaMessageDrivenChannelAdapter extends MessageProducerSupport imp
 	private Decoder<?> keyDecoder = new DefaultDecoder(null);
 
 	private Decoder<?> payloadDecoder = new DefaultDecoder(null);
+
+	private boolean generateMessageId = false;
+
+	private boolean generateTimestamp = false;
 
 	private boolean autoCommitOffset = true;
 
@@ -63,11 +75,33 @@ public class KafkaMessageDrivenChannelAdapter extends MessageProducerSupport imp
 		this.autoCommitOffset = autoCommitOffset;
 	}
 
+	/**
+	 * Generate Message Ids for produced messages. If set to false, uses a default value. By default set to false.
+	 *
+	 * @param generateMessageId true if a message id should be generated
+	 */
+	public void setGenerateMessageId(boolean generateMessageId) {
+		this.generateMessageId = generateMessageId;
+	}
+
+	/**
+	 * Generate timestamp for produced messages. If set to false, -1 is used instead. By default set to false.
+	 *
+	 * @param generateTimestamp true if a timestamp should be generated
+	 */
+	public void setGenerateTimestamp(boolean generateTimestamp) {
+		this.generateTimestamp = generateTimestamp;
+	}
+
 	@Override
 	protected void onInit() {
 		this.messageListenerContainer.setMessageListener(autoCommitOffset ?
 				new AutoAcknowledgingChannelForwardingMessageListener()
 				: new AcknowledgingChannelForwardingMessageListener());
+		if (!generateMessageId && !generateTimestamp
+				&& (getMessageBuilderFactory() instanceof DefaultMessageBuilderFactory)) {
+			setMessageBuilderFactory(new MutableMessageBuilderFactory());
+		}
 		super.onInit();
 	}
 
@@ -128,18 +162,34 @@ public class KafkaMessageDrivenChannelAdapter extends MessageProducerSupport imp
 
 	}
 
-	private Message<Object> toMessage(Object key, Object payload, KafkaMessageMetadata metadata,
+	private Message<Object> toMessage(Object key, final Object payload, KafkaMessageMetadata metadata,
 			Acknowledgment acknowledgment) {
-		AbstractIntegrationMessageBuilder<Object> messageBuilder = getMessageBuilderFactory().withPayload(payload)
-				.setHeader(KafkaHeaders.MESSAGE_KEY, key)
-				.setHeader(KafkaHeaders.TOPIC, metadata.getPartition().getTopic())
-				.setHeader(KafkaHeaders.PARTITION_ID, metadata.getPartition().getId())
-				.setHeader(KafkaHeaders.OFFSET, metadata.getOffset())
-				.setHeader(KafkaHeaders.NEXT_OFFSET, metadata.getNextOffset());
-		if (acknowledgment != null) {
-			messageBuilder.setHeader(KafkaHeaders.ACKNOWLEDGMENT, acknowledgment);
+
+		final MutableMap<String, Object> headers = UnifiedMap.<String, Object>newMap()
+				.withKeyValue(KafkaHeaders.MESSAGE_KEY, key)
+				.withKeyValue(KafkaHeaders.TOPIC, metadata.getPartition().getTopic())
+				.withKeyValue(KafkaHeaders.PARTITION_ID, metadata.getPartition().getId())
+				.withKeyValue(KafkaHeaders.OFFSET, metadata.getOffset())
+				.withKeyValue(KafkaHeaders.NEXT_OFFSET, metadata.getNextOffset())
+				.withKeyValue(MessageHeaders.ID, MessageHeaders.ID_VALUE_NONE)
+				.withKeyValue(MessageHeaders.TIMESTAMP, -1L);
+
+		if (!autoCommitOffset) {
+			headers.put(KafkaHeaders.ACKNOWLEDGMENT, acknowledgment);
 		}
-		return messageBuilder.build();
+
+		return new Message<Object>() {
+			@Override
+			public Object getPayload() {
+				return payload;
+			}
+
+			@Override
+			public MessageHeaders getHeaders() {
+				return new MessageHeaders(headers);
+			}
+		};
+
 	}
 
 }

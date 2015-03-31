@@ -20,18 +20,24 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
 
+import com.gs.collections.api.block.function.Function0;
 import com.gs.collections.api.block.procedure.Procedure2;
 import com.gs.collections.api.map.MutableMap;
 import com.gs.collections.api.tuple.Pair;
 import com.gs.collections.impl.map.mutable.ConcurrentHashMap;
+import com.gs.collections.impl.map.mutable.UnifiedMap;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 
 import org.springframework.integration.kafka.core.KafkaMessage;
+import org.springframework.integration.kafka.core.KafkaMessageMetadata;
 import org.springframework.integration.kafka.core.Partition;
 import org.springframework.scheduling.concurrent.CustomizableThreadFactory;
 import org.springframework.util.Assert;
@@ -79,6 +85,8 @@ class ConcurrentMessageListenerDispatcher {
 	private final int queueSize;
 
 	private volatile boolean running;
+
+	private final MutableMap<Partition, CountDownLatch> partitionStopLatches = UnifiedMap.newMap();
 
 	// keeps track of the load
 	private final MutableMap<Partition, QueueingMessageListenerInvoker> invokersByPartition =
@@ -172,7 +180,7 @@ class ConcurrentMessageListenerDispatcher {
 		}
 	}
 
-	public void removePartition(Partition partition) {
+	public void removePartition(Partition partition, long stopTimeout) {
 		synchronized (invokersByPartition) {
 			QueueingMessageListenerInvoker listenedInvoker = invokersByPartition.remove(partition);
 			if (listenedInvoker != null) {
@@ -183,10 +191,10 @@ class ConcurrentMessageListenerDispatcher {
 				else {
 					loadByInvoker.put(listenedInvoker, listenedPartitionCount - 1);
 				}
+				listenedInvoker.flush(partition, stopTimeout);
 			}
 		}
 	}
-
 
 
 	@SuppressWarnings("serial")

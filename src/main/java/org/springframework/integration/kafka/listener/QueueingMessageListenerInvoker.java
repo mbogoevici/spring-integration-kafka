@@ -21,7 +21,12 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
+import com.gs.collections.api.map.MutableMap;
+import com.gs.collections.impl.map.mutable.UnifiedMap;
+
 import org.springframework.integration.kafka.core.KafkaMessage;
+import org.springframework.integration.kafka.core.KafkaMessageMetadata;
+import org.springframework.integration.kafka.core.Partition;
 
 /**
  * Invokes a delegate {@link MessageListener} for all the messages passed to it, storing them
@@ -43,7 +48,9 @@ class QueueingMessageListenerInvoker implements Runnable {
 
 	private volatile boolean running = false;
 
-	private volatile CountDownLatch shutdownLatch = null;
+	private volatile CountDownLatch globalShutdownLatch = null;
+
+	private final MutableMap<Partition, CountDownLatch> partitionStopLatches = UnifiedMap.newMap();
 
 	public QueueingMessageListenerInvoker(int capacity, OffsetManager offsetManager, Object delegate,
 			ErrorHandler errorHandler) {
@@ -98,15 +105,29 @@ class QueueingMessageListenerInvoker implements Runnable {
 	}
 
 	public void stop(long stopTimeout) {
-		shutdownLatch = new CountDownLatch(1);
+		globalShutdownLatch = new CountDownLatch(1);
 		this.running = false;
 		try {
-			shutdownLatch.await(stopTimeout, TimeUnit.MILLISECONDS);
+			globalShutdownLatch.await(stopTimeout, TimeUnit.MILLISECONDS);
 		}
 		catch (InterruptedException e) {
 			Thread.currentThread().interrupt();
 		}
 		messages.clear();
+	}
+
+	public void flush(Partition partition, long flushTimeout) {
+		if (running) {
+			CountDownLatch partitionStopLatch = new CountDownLatch(1);
+			partitionStopLatches.put(partition, partitionStopLatch);
+			this.enqueue(new KafkaMessage(null, new KafkaMessageMetadata(partition, -1, -1)));
+			try {
+				partitionStopLatch.await(flushTimeout, TimeUnit.MILLISECONDS);
+			}
+			catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+			}
+		}
 	}
 
 	/**
@@ -120,24 +141,33 @@ class QueueingMessageListenerInvoker implements Runnable {
 			try {
 				KafkaMessage message = messages.take();
 				if (this.running) {
-					try {
-						if (messageListener != null) {
-							messageListener.onMessage(message);
+					// it is not a partition shutdown message
+					if (message.getMessage() != null) {
+						try {
+							if (messageListener != null) {
+								messageListener.onMessage(message);
+							}
+							else {
+								acknowledgingMessageListener.onMessage(message, new DefaultAcknowledgment(offsetManager, message));
+							}
 						}
-						else {
-							acknowledgingMessageListener.onMessage(message, new DefaultAcknowledgment(offsetManager, message));
+						catch (Exception e) {
+							if (errorHandler != null) {
+								errorHandler.handle(e, message);
+							}
+						}
+						finally {
+							if (messageListener != null) {
+								offsetManager.updateOffset(message.getMetadata().getPartition(),
+										message.getMetadata().getNextOffset());
+							}
 						}
 					}
-					catch (Exception e) {
-						if (errorHandler != null) {
-							errorHandler.handle(e, message);
-						}
-					}
-					finally {
-						if (messageListener != null) {
-							offsetManager.updateOffset(message.getMetadata().getPartition(),
-									message.getMetadata().getNextOffset());
-						}
+				}
+				if (message.getMessage() == null) {
+					CountDownLatch latch = partitionStopLatches.get(message.getMetadata().getPartition());
+					if (latch != null) {
+						latch.countDown();
 					}
 				}
 			}
@@ -145,8 +175,8 @@ class QueueingMessageListenerInvoker implements Runnable {
 				wasInterrupted = true;
 			}
 		}
-		if (shutdownLatch != null) {
-			shutdownLatch.countDown();
+		if (globalShutdownLatch != null) {
+			globalShutdownLatch.countDown();
 		}
 		if (wasInterrupted) {
 			Thread.currentThread().interrupt();

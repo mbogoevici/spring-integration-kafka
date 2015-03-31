@@ -31,6 +31,7 @@ import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 
+import com.gs.collections.api.tuple.Pair;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 
@@ -69,7 +70,7 @@ import kafka.common.ErrorMapping;
 /**
  * @author Marius Bogoevici
  */
-public class KafkaMessageListenerContainer implements SmartLifecycle {
+public class KafkaMessageListenerContainer implements SmartLifecycle,ListenerContainerControl {
 
 	private static final int DEFAULT_STOP_TIMEOUT = 1000;
 
@@ -123,8 +124,6 @@ public class KafkaMessageListenerContainer implements SmartLifecycle {
 
 	public KafkaMessageListenerContainer(ConnectionFactory connectionFactory, Partition... partitions) {
 		Assert.notNull(connectionFactory, "A connection factory must be supplied");
-		Assert.notEmpty(partitions, "A list of partitions must be provided");
-		Assert.noNullElements(partitions, "The list of partitions cannot contain null elements");
 		this.kafkaTemplate = new KafkaTemplate(connectionFactory);
 		this.partitions = partitions;
 		this.topics = null;
@@ -132,8 +131,6 @@ public class KafkaMessageListenerContainer implements SmartLifecycle {
 
 	public KafkaMessageListenerContainer(final ConnectionFactory connectionFactory, String... topics) {
 		Assert.notNull(connectionFactory, "A connection factory must be supplied");
-		Assert.notNull(topics, "A list of topics must be provided");
-		Assert.noNullElements(topics, "The list of topics cannot contain null elements");
 		this.kafkaTemplate = new KafkaTemplate(connectionFactory);
 		this.topics = topics;
 	}
@@ -313,6 +310,47 @@ public class KafkaMessageListenerContainer implements SmartLifecycle {
 	private static Partition[] getPartitionsForTopics(final ConnectionFactory connectionFactory, String[] topics) {
 		MutableList<Partition> partitionList = flatCollect(topics, new GetPartitionsForTopic(connectionFactory));
 		return partitionList.toArray(new Partition[partitionList.size()]);
+	}
+
+	@Override
+	public void startListening(Partition partition) {
+		if (!partitionsByBrokerMap.containsValue(partition)) {
+			synchronized (partitionsByBrokerMap) {
+				if (!partitionsByBrokerMap.containsValue(partition)) {
+					BrokerAddress leader = kafkaTemplate.getConnectionFactory().getLeader(partition);
+					messageDispatcher.addPartition(partition);
+					partitionsByBrokerMap.put(leader, partition);
+				}
+			}
+		}
+	}
+
+	@Override
+	public void stopListening(final Partition partition, long timeout) {
+		if (partitionsByBrokerMap.containsValue(partition)) {
+			synchronized (partitionsByBrokerMap) {
+				if (partitionsByBrokerMap.containsValue(partition)) {
+					BrokerAddress leader = kafkaTemplate.getConnectionFactory().getLeader(partition);
+					messageDispatcher.removePartition(partition, stopTimeout);
+					// normally, the partition should be in the leader's collection of values
+					if (partitionsByBrokerMap.get(leader).contains(partition)) {
+						partitionsByBrokerMap.remove(leader,partition);
+					}
+					else {
+						// however, if there
+						RichIterable<Pair<BrokerAddress, Partition>> element = partitionsByBrokerMap.keyValuePairsView().select(new Predicate<Pair<BrokerAddress, Partition>>() {
+							@Override
+							public boolean accept(Pair<BrokerAddress, Partition> each) {
+								return each.getTwo().equals(partition);
+							}
+						});
+						if (element.size() > 0) {
+							partitionsByBrokerMap.remove(element.getFirst().getOne(), element.getFirst().getTwo());
+						}
+					}
+				}
+			}
+		}
 	}
 
 	/**

@@ -21,13 +21,10 @@ import java.util.Collection;
 import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
-import java.util.concurrent.TimeUnit;
 
-import com.gs.collections.api.block.function.Function0;
 import com.gs.collections.api.block.procedure.Procedure2;
 import com.gs.collections.api.map.MutableMap;
 import com.gs.collections.api.tuple.Pair;
@@ -37,7 +34,6 @@ import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 
 import org.springframework.integration.kafka.core.KafkaMessage;
-import org.springframework.integration.kafka.core.KafkaMessageMetadata;
 import org.springframework.integration.kafka.core.Partition;
 import org.springframework.scheduling.concurrent.CustomizableThreadFactory;
 import org.springframework.util.Assert;
@@ -105,8 +101,8 @@ class ConcurrentMessageListenerDispatcher {
 						"Either a " + MessageListener.class.getName() + " or a "
 								+ AcknowledgingMessageListener.class.getName() + " must be provided");
 		Assert.notEmpty(partitions, "A set of partitions must be provided");
-		Assert.isTrue(consumers <= partitions.size(),
-				"The number of consumers must be smaller or equal to the number of partitions");
+//		Assert.isTrue(consumers <= partitions.size(),
+//				"The number of consumers must be smaller or equal to the number of partitions");
 		Assert.notNull(delegateListener, "A delegate must be provided");
 		this.delegateListener = delegateListener;
 		this.errorHandler = errorHandler;
@@ -130,20 +126,28 @@ class ConcurrentMessageListenerDispatcher {
 			if (this.running) {
 				this.running = false;
 				synchronized (invokersByPartition) {
-					invokersByPartition.flip().keyBag().toSet().forEachWith(stopDelegateProcedure, stopTimeout);
+					loadByInvoker.keysView().forEachWith(stopDelegateProcedure, stopTimeout);
 				}
 			}
 		}
 	}
 
-	public void dispatch(KafkaMessage message) {
+	/**
+	 *
+	 * @param message the message to dispatch
+	 *
+	 * @return whether the message has been dispatched or not (i.e. ignored)
+	 */
+	public boolean dispatch(KafkaMessage message) {
 		if (this.running) {
 			QueueingMessageListenerInvoker queueingMessageListenerInvoker =
 					invokersByPartition.get(message.getMetadata().getPartition());
 			if (queueingMessageListenerInvoker != null) {
 				queueingMessageListenerInvoker.enqueue(message);
+				return true;
 			}
 		}
+		return false;
 	}
 
 	private void initializeAndStartDispatching() {
@@ -164,7 +168,7 @@ class ConcurrentMessageListenerDispatcher {
 				this.taskExecutor = Executors.newFixedThreadPool(consumers, THREAD_FACTORY);
 			}
 			// start dispatchers
-			invokersByPartition.flip().keyBag().toSet().forEachWith(startDelegateProcedure, taskExecutor);
+			loadByInvoker.keysView().forEachWith(startDelegateProcedure, taskExecutor);
 		}
 	}
 
@@ -184,7 +188,7 @@ class ConcurrentMessageListenerDispatcher {
 		synchronized (invokersByPartition) {
 			QueueingMessageListenerInvoker listenedInvoker = invokersByPartition.remove(partition);
 			if (listenedInvoker != null) {
-				Integer listenedPartitionCount = loadByInvoker.get(invokerLoadComparator);
+				Integer listenedPartitionCount = loadByInvoker.get(listenedInvoker);
 				if (listenedPartitionCount == 0) {
 					log.warn("Trying to remove the Invoker for " + partition + ", but listened partition count is zero");
 				}

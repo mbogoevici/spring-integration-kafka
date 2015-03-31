@@ -120,7 +120,7 @@ class QueueingMessageListenerInvoker implements Runnable {
 		if (running) {
 			CountDownLatch partitionStopLatch = new CountDownLatch(1);
 			partitionStopLatches.put(partition, partitionStopLatch);
-			this.enqueue(new KafkaMessage(null, new KafkaMessageMetadata(partition, -1, -1)));
+			this.enqueue(new KafkaMessage(null, new KafkaMessageMetadata(partition, 0, 0)));
 			try {
 				partitionStopLatch.await(flushTimeout, TimeUnit.MILLISECONDS);
 			}

@@ -18,33 +18,51 @@ package org.springframework.integration.kafka.listener;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
+
+import com.gs.collections.api.block.procedure.Procedure2;
+import com.gs.collections.api.map.MutableMap;
+import com.gs.collections.api.tuple.Pair;
+import com.gs.collections.impl.map.mutable.ConcurrentHashMap;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 
 import org.springframework.integration.kafka.core.KafkaMessage;
 import org.springframework.integration.kafka.core.Partition;
 import org.springframework.scheduling.concurrent.CustomizableThreadFactory;
 import org.springframework.util.Assert;
 
-import com.gs.collections.api.block.procedure.Procedure2;
-import com.gs.collections.api.map.MutableMap;
-import com.gs.collections.impl.factory.Maps;
-
 /**
  * Dispatches {@link KafkaMessage}s to a {@link MessageListener}. Messages may be
  * processed concurrently, according to the {@code concurrency} settings, but messages
  * from the same partition are being processed in their original order.
  *
+ * When a partition is added, the component will try to allocate it to the thread that is
+ * currently processing the smallest number of partitions.
+ *
+ * Removing partitions may create a load imbalance between threads, as the
+ *
  * @author Marius Bogoevici
  */
 class ConcurrentMessageListenerDispatcher {
 
-	public static final CustomizableThreadFactory THREAD_FACTORY = new CustomizableThreadFactory("dispatcher-");
+	private static Log log = LogFactory.getLog(ConcurrentMessageListenerDispatcher.class);
 
-	private static final StartDelegateProcedure startDelegateProcedure = new StartDelegateProcedure();
+	private static final ThreadFactory THREAD_FACTORY = new CustomizableThreadFactory("kafka-listener-dispatcher-");
 
-	private static final StopDelegateProcedure stopDelegateProcedure = new StopDelegateProcedure();
+	private static final Procedure2<QueueingMessageListenerInvoker, Executor> startDelegateProcedure
+			= new StartDelegateProcedure();
+
+
+	private static final Procedure2<QueueingMessageListenerInvoker, Integer> stopDelegateProcedure
+			= new StopDelegateProcedure();
+
+	private static final Comparator<Pair<QueueingMessageListenerInvoker, Integer>> invokerLoadComparator
+			= new InvokerLoadComparator();
 
 	private final Object lifecycleMonitor = new Object();
 
@@ -62,7 +80,12 @@ class ConcurrentMessageListenerDispatcher {
 
 	private volatile boolean running;
 
-	private MutableMap<Partition, QueueingMessageListenerInvoker> delegates;
+	// keeps track of the load
+	private final MutableMap<Partition, QueueingMessageListenerInvoker> invokersByPartition =
+			new ConcurrentHashMap<Partition, QueueingMessageListenerInvoker>();
+
+	private final MutableMap<QueueingMessageListenerInvoker, Integer> loadByInvoker =
+			new ConcurrentHashMap<QueueingMessageListenerInvoker, Integer>();
 
 	private Executor taskExecutor;
 
@@ -98,38 +121,73 @@ class ConcurrentMessageListenerDispatcher {
 		synchronized (lifecycleMonitor) {
 			if (this.running) {
 				this.running = false;
-				delegates.flip().keyBag().toSet().forEachWith(stopDelegateProcedure, stopTimeout);
+				synchronized (invokersByPartition) {
+					invokersByPartition.flip().keyBag().toSet().forEachWith(stopDelegateProcedure, stopTimeout);
+				}
 			}
 		}
 	}
 
 	public void dispatch(KafkaMessage message) {
 		if (this.running) {
-			delegates.get(message.getMetadata().getPartition()).enqueue(message);
+			QueueingMessageListenerInvoker queueingMessageListenerInvoker =
+					invokersByPartition.get(message.getMetadata().getPartition());
+			if (queueingMessageListenerInvoker != null) {
+				queueingMessageListenerInvoker.enqueue(message);
+			}
 		}
 	}
 
 	private void initializeAndStartDispatching() {
 		// allocate delegate instances index them
-		List<QueueingMessageListenerInvoker> delegateList = new ArrayList<QueueingMessageListenerInvoker>(consumers);
-		for (int i = 0; i < consumers; i++) {
-			QueueingMessageListenerInvoker blockingQueueMessageListenerInvoker =
-					new QueueingMessageListenerInvoker(queueSize, offsetManager, delegateListener, errorHandler);
-			delegateList.add(blockingQueueMessageListenerInvoker);
+		synchronized (invokersByPartition) {
+			List<QueueingMessageListenerInvoker> delegateList = new ArrayList<QueueingMessageListenerInvoker>(consumers);
+			for (int i = 0; i < consumers; i++) {
+				QueueingMessageListenerInvoker blockingQueueMessageListenerInvoker =
+						new QueueingMessageListenerInvoker(queueSize, offsetManager, delegateListener, errorHandler);
+				delegateList.add(blockingQueueMessageListenerInvoker);
+				loadByInvoker.put(blockingQueueMessageListenerInvoker, 0);
+			}
+			for (Partition partition : partitions) {
+				addPartition(partition);
+			}
+			// initialize task executor
+			if (this.taskExecutor == null) {
+				this.taskExecutor = Executors.newFixedThreadPool(consumers, THREAD_FACTORY);
+			}
+			// start dispatchers
+			invokersByPartition.flip().keyBag().toSet().forEachWith(startDelegateProcedure, taskExecutor);
 		}
-		// evenly distribute partitions across delegates
-		delegates = Maps.mutable.of();
-		int i = 0;
-		for (Partition partition : partitions) {
-			delegates.put(partition, delegateList.get((i++) % consumers));
-		}
-		// initialize task executor
-		if (this.taskExecutor == null) {
-			this.taskExecutor = Executors.newFixedThreadPool(consumers, THREAD_FACTORY);
-		}
-		// start dispatchers
-		delegates.flip().keyBag().toSet().forEachWith(startDelegateProcedure, taskExecutor);
 	}
+
+	public void addPartition(Partition partition) {
+		synchronized (invokersByPartition) {
+			QueueingMessageListenerInvoker queueingMessageListenerInvoker = invokersByPartition.get(partition);
+			if (queueingMessageListenerInvoker == null) {
+				Pair<QueueingMessageListenerInvoker, Integer> leastUsedInvoker
+						= loadByInvoker.keyValuesView().min(invokerLoadComparator);
+				loadByInvoker.put(leastUsedInvoker.getOne(), leastUsedInvoker.getTwo() + 1);
+				invokersByPartition.put(partition, leastUsedInvoker.getOne());
+			}
+		}
+	}
+
+	public void removePartition(Partition partition) {
+		synchronized (invokersByPartition) {
+			QueueingMessageListenerInvoker listenedInvoker = invokersByPartition.remove(partition);
+			if (listenedInvoker != null) {
+				Integer listenedPartitionCount = loadByInvoker.get(invokerLoadComparator);
+				if (listenedPartitionCount == 0) {
+					log.warn("Trying to remove the Invoker for " + partition + ", but listened partition count is zero");
+				}
+				else {
+					loadByInvoker.put(listenedInvoker, listenedPartitionCount - 1);
+				}
+			}
+		}
+	}
+
+
 
 	@SuppressWarnings("serial")
 	private static class StopDelegateProcedure implements Procedure2<QueueingMessageListenerInvoker, Integer> {
@@ -152,4 +210,10 @@ class ConcurrentMessageListenerDispatcher {
 
 	}
 
+	private static class InvokerLoadComparator implements Comparator<Pair<QueueingMessageListenerInvoker, Integer>> {
+		@Override
+		public int compare(Pair<QueueingMessageListenerInvoker, Integer> o1, Pair<QueueingMessageListenerInvoker, Integer> o2) {
+			return o1.getTwo() - o2.getTwo();
+		}
+	}
 }

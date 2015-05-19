@@ -186,9 +186,9 @@ public class DefaultConnectionFactory implements InitializingBean, ConnectionFac
 			PartitionIterable<TopicMetadata> selectWithoutErrors = Iterate.partition(topicMetadataResponse.topicsMetadata(),
 					errorlessTopicMetadataPredicate);
 			this.metadataCacheHolder.set(this.metadataCacheHolder.get().merge(selectWithoutErrors.getSelected()));
-			if (log.isInfoEnabled()) {
+			if (log.isDebugEnabled()) {
 				for (TopicMetadata topicMetadata : selectWithoutErrors.getRejected()) {
-					log.info(String.format("No metadata could be retrieved for '%s'", topicMetadata.topic()),
+					log.debug(String.format("No metadata could be retrieved for '%s'", topicMetadata.topic()),
 							ErrorMapping.exceptionFor(topicMetadata.errorCode()));
 				}
 			}

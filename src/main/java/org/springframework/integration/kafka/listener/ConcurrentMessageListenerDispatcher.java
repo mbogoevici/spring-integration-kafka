@@ -69,8 +69,6 @@ class ConcurrentMessageListenerDispatcher {
 
 	private MutableMap<Partition, QueueingMessageListenerInvoker> delegates;
 
-	private Executor taskExecutor;
-
 	public ConcurrentMessageListenerDispatcher(Object delegateListener, ErrorHandler errorHandler,
 			Collection<Partition> partitions, OffsetManager offsetManager, int consumers, int queueSize, Executor taskExecutor) {
 		Assert.isTrue
@@ -88,7 +86,6 @@ class ConcurrentMessageListenerDispatcher {
 		this.offsetManager = offsetManager;
 		this.consumers = consumers;
 		this.queueSize = queueSize;
-		this.taskExecutor = taskExecutor;
 	}
 
 	public void start() {
@@ -130,12 +127,12 @@ class ConcurrentMessageListenerDispatcher {
 		for (Partition partition : partitions) {
 			delegates.put(partition, delegateList.get((i++) % consumers));
 		}
-		// initialize task executor
-		if (this.taskExecutor == null) {
-			this.taskExecutor = Executors.newFixedThreadPool(consumers, THREAD_FACTORY);
-		}
+//		// initialize task executor
+//		if (this.taskExecutor == null) {
+//			this.taskExecutor = Executors.newFixedThreadPool(consumers, THREAD_FACTORY);
+//		}
 		// start dispatchers
-		delegates.flip().keyBag().toSet().forEachWith(startDelegateProcedure, taskExecutor);
+		delegates.flip().keyBag().toSet().forEachWith(startDelegateProcedure, null);
 	}
 
 	@SuppressWarnings("serial")
@@ -161,7 +158,6 @@ class ConcurrentMessageListenerDispatcher {
 		@Override
 		public void value(QueueingMessageListenerInvoker delegate, Executor executor) {
 			delegate.start();
-			executor.execute(delegate);
 		}
 
 	}

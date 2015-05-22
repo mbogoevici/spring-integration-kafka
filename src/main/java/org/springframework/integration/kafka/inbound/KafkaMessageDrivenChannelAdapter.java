@@ -32,6 +32,8 @@ import org.springframework.integration.support.MessageBuilderFactory;
 import org.springframework.integration.support.MutableMessageBuilderFactory;
 import org.springframework.messaging.Message;
 import org.springframework.messaging.MessageHeaders;
+import org.springframework.messaging.support.MessageBuilder;
+import org.springframework.messaging.support.MessageHeaderAccessor;
 import org.springframework.util.Assert;
 
 import kafka.serializer.Decoder;
@@ -192,36 +194,36 @@ public class KafkaMessageDrivenChannelAdapter extends MessageProducerSupport imp
 	private Message<Object> toMessage(Object key, Object payload, KafkaMessageMetadata metadata,
 			Acknowledgment acknowledgment) {
 
-		final Map<String, Object> headers = new HashMap<String, Object>();
+		final MessageHeaderAccessor headerAccessor = new MessageHeaderAccessor();
 
-		headers.put(KafkaHeaders.MESSAGE_KEY, key);
-		headers.put(KafkaHeaders.TOPIC, metadata.getPartition().getTopic());
-		headers.put(KafkaHeaders.PARTITION_ID, metadata.getPartition().getId());
-		headers.put(KafkaHeaders.OFFSET, metadata.getOffset());
-		headers.put(KafkaHeaders.NEXT_OFFSET, metadata.getNextOffset());
+		headerAccessor.setHeader(KafkaHeaders.MESSAGE_KEY, key);
+		headerAccessor.setHeader(KafkaHeaders.TOPIC, metadata.getPartition().getTopic());
+		headerAccessor.setHeader(KafkaHeaders.PARTITION_ID, metadata.getPartition().getId());
+		headerAccessor.setHeader(KafkaHeaders.OFFSET, metadata.getOffset());
+		headerAccessor.setHeader(KafkaHeaders.NEXT_OFFSET, metadata.getNextOffset());
 
-		// pre-set the message id header if set to not generate
-		if (!this.generateMessageId) {
-			headers.put(MessageHeaders.ID, MessageHeaders.ID_VALUE_NONE);
-		}
-
-		// pre-set the timestamp header if set to not generate
-		if (!this.generateTimestamp) {
-			headers.put(MessageHeaders.TIMESTAMP, -1L);
-		}
+//		// pre-set the message id header if set to not generate
+//		if (this.generateMessageId) {
+//			headerAccessor.setHeader(MessageHeaders.ID, MessageHeaders.ID_VALUE_NONE);
+//		}
+//
+//		// pre-set the timestamp header if set to not generate
+//		if (!this.generateTimestamp) {
+//			headerAccessor.setHeader(MessageHeaders.TIMESTAMP, -1L);
+//		}
 
 		if (!this.autoCommitOffset) {
-			headers.put(KafkaHeaders.ACKNOWLEDGMENT, acknowledgment);
+			headerAccessor.setHeader(KafkaHeaders.ACKNOWLEDGMENT, acknowledgment);
 		}
 
 		if (this.useMessageBuilderFactory) {
 			return getMessageBuilderFactory()
 					.withPayload(payload)
-					.copyHeaders(headers)
+					.copyHeaders(headerAccessor.toMessageHeaders())
 					.build();
 		}
 		else {
-			return new KafkaMessage(payload, headers);
+			return MessageBuilder.createMessage(payload, headerAccessor.getMessageHeaders());
 		}
 
 	}

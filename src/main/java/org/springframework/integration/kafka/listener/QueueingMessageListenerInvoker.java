@@ -16,10 +16,15 @@
 
 package org.springframework.integration.kafka.listener;
 
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+
+import com.lmax.disruptor.EventFactory;
+import com.lmax.disruptor.EventHandler;
+import com.lmax.disruptor.RingBuffer;
+import com.lmax.disruptor.TimeoutException;
+import com.lmax.disruptor.dsl.Disruptor;
 
 import org.springframework.integration.kafka.core.KafkaMessage;
 
@@ -29,7 +34,7 @@ import org.springframework.integration.kafka.core.KafkaMessage;
  *
  * @author Marius Bogoevici
  */
-class QueueingMessageListenerInvoker implements Runnable {
+class QueueingMessageListenerInvoker {
 
 	private final MessageListener messageListener;
 
@@ -39,14 +44,32 @@ class QueueingMessageListenerInvoker implements Runnable {
 
 	private final ErrorHandler errorHandler;
 
-	private BlockingQueue<KafkaMessage> messages;
+	private Disruptor<MessageEvent> disruptor;
 
 	private volatile boolean running = false;
 
 	private volatile CountDownLatch shutdownLatch = null;
 
-	public QueueingMessageListenerInvoker(int capacity, OffsetManager offsetManager, Object delegate,
-			ErrorHandler errorHandler) {
+	private RingBuffer<MessageEvent> ringBuffer;
+
+	private static class MessageEvent {
+
+		private KafkaMessage kafkaMessage;
+
+		public void setKafkaMessage(KafkaMessage kafkaMessage) {
+			this.kafkaMessage = kafkaMessage;
+		}
+
+		public final static EventFactory<MessageEvent> EVENT_FACTORY = new EventFactory<MessageEvent>() {
+			@Override
+			public MessageEvent newInstance() {
+				return new MessageEvent();
+			}
+		};
+	}
+
+	public QueueingMessageListenerInvoker(int capacity, final OffsetManager offsetManager, Object delegate,
+			final ErrorHandler errorHandler) {
 		if (delegate instanceof MessageListener) {
 			this.messageListener = (MessageListener) delegate;
 			this.acknowledgingMessageListener = null;
@@ -62,7 +85,28 @@ class QueueingMessageListenerInvoker implements Runnable {
 		}
 		this.offsetManager = offsetManager;
 		this.errorHandler = errorHandler;
-		this.messages = new ArrayBlockingQueue<KafkaMessage>(capacity);
+		this.disruptor = new Disruptor<MessageEvent>(MessageEvent.EVENT_FACTORY, capacity, Executors.newSingleThreadExecutor());
+		disruptor.handleEventsWith(new EventHandler<MessageEvent>() {
+			@Override
+			public void onEvent(MessageEvent event, long sequence, boolean endOfBatch) throws Exception {
+				try {
+					if (messageListener != null) {
+						messageListener.onMessage(event.kafkaMessage);
+					} else {
+						acknowledgingMessageListener.onMessage(event.kafkaMessage, new DefaultAcknowledgment(offsetManager, event.kafkaMessage));
+					}
+				} catch (Exception e) {
+					if (errorHandler != null) {
+						errorHandler.handle(e, event.kafkaMessage);
+					}
+				} finally {
+					if (messageListener != null) {
+						offsetManager.updateOffset(event.kafkaMessage.getMetadata().getPartition(),
+								event.kafkaMessage.getMetadata().getNextOffset());
+					}
+				}
+			}
+		});
 	}
 
 	/**
@@ -78,14 +122,11 @@ class QueueingMessageListenerInvoker implements Runnable {
 			// handle the case when the thread is interrupted while the adapter is still running
 			// retry adding the message to the queue until either we succeed, or the adapter is stopped
 			while (!added && this.running) {
-				try {
-					this.messages.put(message);
-					added = true;
-				}
-				catch (InterruptedException e) {
-					// we ignore the interruption signal if we are still running, but pass it on if we are stopped
-					wasInterruptedWhileRunning = true;
-				}
+				long sequence = ringBuffer.next();
+				MessageEvent messageEvent = ringBuffer.get(sequence);
+				messageEvent.setKafkaMessage(message);
+				ringBuffer.publish(sequence);
+				added = true;
 			}
 		}
 		if (wasInterruptedWhileRunning) {
@@ -95,6 +136,7 @@ class QueueingMessageListenerInvoker implements Runnable {
 
 	public void start() {
 		this.running = true;
+		ringBuffer = disruptor.start();
 	}
 
 	public void stop(long stopTimeout) {
@@ -106,51 +148,56 @@ class QueueingMessageListenerInvoker implements Runnable {
 		catch (InterruptedException e) {
 			Thread.currentThread().interrupt();
 		}
-		messages.clear();
+		try {
+			disruptor.shutdown(stopTimeout, TimeUnit.MILLISECONDS);
+		} catch (TimeoutException e) {
+			// ignore timeout
+		}
 	}
 
 	/**
 	 * Runs uninterruptibly as long as {@code running} is true, but if interrupted, will defer
 	 * propagating the interruption flag at the end.
 	 */
-	@Override
-	public void run() {
-		boolean wasInterrupted = false;
-		while (this.running) {
-			try {
-				KafkaMessage message = messages.take();
-				if (this.running) {
-					try {
-						if (messageListener != null) {
-							messageListener.onMessage(message);
-						}
-						else {
-							acknowledgingMessageListener.onMessage(message, new DefaultAcknowledgment(offsetManager, message));
-						}
-					}
-					catch (Exception e) {
-						if (errorHandler != null) {
-							errorHandler.handle(e, message);
-						}
-					}
-					finally {
-						if (messageListener != null) {
-							offsetManager.updateOffset(message.getMetadata().getPartition(),
-									message.getMetadata().getNextOffset());
-						}
-					}
-				}
-			}
-			catch (InterruptedException e) {
-				wasInterrupted = true;
-			}
-		}
-		if (shutdownLatch != null) {
-			shutdownLatch.countDown();
-		}
-		if (wasInterrupted) {
-			Thread.currentThread().interrupt();
-		}
-	}
+//	@Override
+//	public void run() {
+//		boolean wasInterrupted = false;
+//		while (this.running) {
+//			try {
+//				KafkaMessage message = messages.take();
+//				if (this.running) {
+//					try {
+//						if (messageListener != null) {
+//							messageListener.onMessage(message);
+//						}
+//						else {
+//							acknowledgingMessageListener.onMessage(message, new DefaultAcknowledgment(offsetManager, message));
+//						}
+//					}
+//					catch (Exception e) {
+//						if (errorHandler != null) {
+//							errorHandler.handle(e, message);
+//						}
+//					}
+//					finally {
+//						if (messageListener != null) {
+//							offsetManager.updateOffset(message.getMetadata().getPartition(),
+//									message.getMetadata().getNextOffset());
+//						}
+//					}
+//				}
+//			}
+//			catch (InterruptedException e) {
+//				wasInterrupted = true;
+//			}
+//		}
+//		if (shutdownLatch != null) {
+//			shutdownLatch.countDown();
+//		}
+//		if (wasInterrupted) {
+//			Thread.currentThread().interrupt();
+//		}
+//	}
+
 
 }

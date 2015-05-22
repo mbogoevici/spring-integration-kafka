@@ -26,7 +26,10 @@ import com.lmax.disruptor.RingBuffer;
 import com.lmax.disruptor.TimeoutException;
 import com.lmax.disruptor.dsl.Disruptor;
 
+import org.reactivestreams.Subscriber;
+import org.reactivestreams.Subscription;
 import org.springframework.integration.kafka.core.KafkaMessage;
+import reactor.core.processor.RingBufferProcessor;
 
 /**
  * Invokes a delegate {@link MessageListener} for all the messages passed to it, storing them
@@ -44,69 +47,28 @@ class QueueingMessageListenerInvoker {
 
 	private final ErrorHandler errorHandler;
 
-	private Disruptor<MessageEvent> disruptor;
+	private RingBufferProcessor<KafkaMessage> disruptor;
 
 	private volatile boolean running = false;
 
 	private volatile CountDownLatch shutdownLatch = null;
 
-	private RingBuffer<MessageEvent> ringBuffer;
-
-	private static class MessageEvent {
-
-		private KafkaMessage kafkaMessage;
-
-		public void setKafkaMessage(KafkaMessage kafkaMessage) {
-			this.kafkaMessage = kafkaMessage;
-		}
-
-		public final static EventFactory<MessageEvent> EVENT_FACTORY = new EventFactory<MessageEvent>() {
-			@Override
-			public MessageEvent newInstance() {
-				return new MessageEvent();
-			}
-		};
-	}
-
 	public QueueingMessageListenerInvoker(int capacity, final OffsetManager offsetManager, Object delegate,
-			final ErrorHandler errorHandler) {
+	                                      final ErrorHandler errorHandler) {
 		if (delegate instanceof MessageListener) {
 			this.messageListener = (MessageListener) delegate;
 			this.acknowledgingMessageListener = null;
-		}
-		else if (delegate instanceof AcknowledgingMessageListener) {
+		} else if (delegate instanceof AcknowledgingMessageListener) {
 			this.acknowledgingMessageListener = (AcknowledgingMessageListener) delegate;
 			this.messageListener = null;
-		}
-		else {
+		} else {
 			// it's neither, an exception will be thrown
 			throw new IllegalArgumentException("Either a " + MessageListener.class.getName() + " or a "
 					+ AcknowledgingMessageListener.class.getName() + " must be provided");
 		}
 		this.offsetManager = offsetManager;
 		this.errorHandler = errorHandler;
-		this.disruptor = new Disruptor<MessageEvent>(MessageEvent.EVENT_FACTORY, capacity, Executors.newSingleThreadExecutor());
-		disruptor.handleEventsWith(new EventHandler<MessageEvent>() {
-			@Override
-			public void onEvent(MessageEvent event, long sequence, boolean endOfBatch) throws Exception {
-				try {
-					if (messageListener != null) {
-						messageListener.onMessage(event.kafkaMessage);
-					} else {
-						acknowledgingMessageListener.onMessage(event.kafkaMessage, new DefaultAcknowledgment(offsetManager, event.kafkaMessage));
-					}
-				} catch (Exception e) {
-					if (errorHandler != null) {
-						errorHandler.handle(e, event.kafkaMessage);
-					}
-				} finally {
-					if (messageListener != null) {
-						offsetManager.updateOffset(event.kafkaMessage.getMetadata().getPartition(),
-								event.kafkaMessage.getMetadata().getNextOffset());
-					}
-				}
-			}
-		});
+		this.disruptor = RingBufferProcessor.share("kafka-processor", capacity);
 	}
 
 	/**
@@ -122,10 +84,7 @@ class QueueingMessageListenerInvoker {
 			// handle the case when the thread is interrupted while the adapter is still running
 			// retry adding the message to the queue until either we succeed, or the adapter is stopped
 			while (!added && this.running) {
-				long sequence = ringBuffer.next();
-				MessageEvent messageEvent = ringBuffer.get(sequence);
-				messageEvent.setKafkaMessage(message);
-				ringBuffer.publish(sequence);
+				disruptor.onNext(message);
 				added = true;
 			}
 		}
@@ -136,7 +95,43 @@ class QueueingMessageListenerInvoker {
 
 	public void start() {
 		this.running = true;
-		ringBuffer = disruptor.start();
+
+		disruptor.subscribe(new Subscriber<KafkaMessage>() {
+			@Override
+			public void onSubscribe(Subscription s) {
+				s.request(Long.MAX_VALUE);
+			}
+
+			@Override
+			public void onNext(KafkaMessage kafkaMessage) {
+				try {
+					if (messageListener != null) {
+						messageListener.onMessage(kafkaMessage);
+					} else {
+						acknowledgingMessageListener.onMessage(kafkaMessage, new DefaultAcknowledgment(offsetManager, kafkaMessage));
+					}
+				} catch (Exception e) {
+					if (errorHandler != null) {
+						errorHandler.handle(e, kafkaMessage);
+					}
+				} finally {
+					if (messageListener != null) {
+						offsetManager.updateOffset(kafkaMessage.getMetadata().getPartition(),
+								kafkaMessage.getMetadata().getNextOffset());
+					}
+				}
+			}
+
+			@Override
+			public void onError(Throwable t) {
+				//ignore
+			}
+
+			@Override
+			public void onComplete() {
+				shutdownLatch.countDown();
+			}
+		});
 	}
 
 	public void stop(long stopTimeout) {
@@ -148,11 +143,7 @@ class QueueingMessageListenerInvoker {
 		catch (InterruptedException e) {
 			Thread.currentThread().interrupt();
 		}
-		try {
-			disruptor.shutdown(stopTimeout, TimeUnit.MILLISECONDS);
-		} catch (TimeoutException e) {
-			// ignore timeout
-		}
+		disruptor.onComplete();
 	}
 
 	/**

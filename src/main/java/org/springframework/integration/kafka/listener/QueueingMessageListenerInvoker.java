@@ -26,6 +26,7 @@ import com.lmax.disruptor.RingBuffer;
 import com.lmax.disruptor.TimeoutException;
 import com.lmax.disruptor.dsl.Disruptor;
 
+import com.sun.tools.internal.xjc.reader.Ring;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
 import org.springframework.integration.kafka.core.KafkaMessage;
@@ -47,14 +48,16 @@ class QueueingMessageListenerInvoker {
 
 	private final ErrorHandler errorHandler;
 
+	private final int capacity;
+
 	private RingBufferProcessor<KafkaMessage> disruptor;
 
 	private volatile boolean running = false;
 
-	private volatile CountDownLatch shutdownLatch = null;
-
 	public QueueingMessageListenerInvoker(int capacity, final OffsetManager offsetManager, Object delegate,
 	                                      final ErrorHandler errorHandler) {
+		this.capacity = capacity;
+
 		if (delegate instanceof MessageListener) {
 			this.messageListener = (MessageListener) delegate;
 			this.acknowledgingMessageListener = null;
@@ -68,7 +71,6 @@ class QueueingMessageListenerInvoker {
 		}
 		this.offsetManager = offsetManager;
 		this.errorHandler = errorHandler;
-		this.disruptor = RingBufferProcessor.share("kafka-processor", capacity);
 	}
 
 	/**
@@ -94,7 +96,14 @@ class QueueingMessageListenerInvoker {
 	}
 
 	public void start() {
+
+		if(disruptor != null){
+			stop(-1l);
+		}
+
+		RingBufferProcessor<KafkaMessage> ringBufferProcessor = RingBufferProcessor.share("kafka-processor", capacity);
 		this.running = true;
+		this.disruptor = ringBufferProcessor;
 
 		disruptor.subscribe(new Subscriber<KafkaMessage>() {
 			@Override
@@ -129,21 +138,18 @@ class QueueingMessageListenerInvoker {
 
 			@Override
 			public void onComplete() {
-				shutdownLatch.countDown();
+				//ignore
 			}
 		});
 	}
 
 	public void stop(long stopTimeout) {
-		shutdownLatch = new CountDownLatch(1);
 		this.running = false;
-		try {
-			shutdownLatch.await(stopTimeout, TimeUnit.MILLISECONDS);
+		RingBufferProcessor<KafkaMessage> processor = disruptor;
+		if(processor != null) {
+			disruptor = null;
+			processor.onComplete();
 		}
-		catch (InterruptedException e) {
-			Thread.currentThread().interrupt();
-		}
-		disruptor.onComplete();
 	}
 
 	/**

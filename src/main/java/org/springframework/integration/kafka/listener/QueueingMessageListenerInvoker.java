@@ -16,21 +16,13 @@
 
 package org.springframework.integration.kafka.listener;
 
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
-
-import com.lmax.disruptor.EventFactory;
-import com.lmax.disruptor.EventHandler;
-import com.lmax.disruptor.RingBuffer;
-import com.lmax.disruptor.TimeoutException;
-import com.lmax.disruptor.dsl.Disruptor;
-
-import com.sun.tools.internal.xjc.reader.Ring;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
 import org.springframework.integration.kafka.core.KafkaMessage;
 import reactor.core.processor.RingBufferProcessor;
+
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Invokes a delegate {@link MessageListener} for all the messages passed to it, storing them
@@ -53,6 +45,8 @@ class QueueingMessageListenerInvoker {
 	private RingBufferProcessor<KafkaMessage> disruptor;
 
 	private volatile boolean running = false;
+
+	private volatile CountDownLatch shutdownLatch;
 
 	public QueueingMessageListenerInvoker(int capacity, final OffsetManager offsetManager, Object delegate,
 	                                      final ErrorHandler errorHandler) {
@@ -104,7 +98,6 @@ class QueueingMessageListenerInvoker {
 		RingBufferProcessor<KafkaMessage> ringBufferProcessor = RingBufferProcessor.share("kafka-processor", capacity);
 		this.running = true;
 		this.disruptor = ringBufferProcessor;
-
 		disruptor.subscribe(new Subscriber<KafkaMessage>() {
 			@Override
 			public void onSubscribe(Subscription s) {
@@ -138,17 +131,33 @@ class QueueingMessageListenerInvoker {
 
 			@Override
 			public void onComplete() {
-				//ignore
+				CountDownLatch latch = shutdownLatch;
+				if(latch != null){
+					shutdownLatch = null;
+					latch.countDown();
+				}
 			}
 		});
 	}
 
 	public void stop(long stopTimeout) {
 		this.running = false;
+
 		RingBufferProcessor<KafkaMessage> processor = disruptor;
+
 		if(processor != null) {
 			disruptor = null;
 			processor.onComplete();
+
+			CountDownLatch latch = new CountDownLatch(1);;
+			shutdownLatch = latch;
+
+			try {
+				latch.await(stopTimeout, TimeUnit.MILLISECONDS);
+			} catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+			}
+
 		}
 	}
 

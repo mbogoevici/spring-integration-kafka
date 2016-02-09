@@ -31,6 +31,7 @@ import scala.collection.immutable.List$;
 import scala.collection.immutable.Map$;
 import scala.collection.immutable.Seq;
 
+import org.springframework.integration.kafka.listener.WindowingOffsetManager;
 import org.springframework.integration.kafka.core.DefaultConnectionFactory;
 import org.springframework.integration.kafka.core.Partition;
 import org.springframework.integration.kafka.core.ZookeeperConfiguration;
@@ -53,6 +54,10 @@ import com.gs.collections.impl.tuple.Tuples;
  */
 public class OffsetManagerPerformanceTests {
 
+	public static final int TIME_WINDOW = 10000;
+
+	public static final int UPDATE_COUNT = 100000;
+
 	@Rule
 	public KafkaEmbedded embedded = new KafkaEmbedded(1);
 
@@ -61,19 +66,42 @@ public class OffsetManagerPerformanceTests {
 		KafkaTopicOffsetManager kafkaTopicOffsetManager = new KafkaTopicOffsetManager(new ZookeeperConnect(embedded.getZookeeperConnectionString()), "zkTopic");
 		kafkaTopicOffsetManager.afterPropertiesSet();
 		createTopic(embedded.getZkClient(), "sometopic", 1, 1, 1);
-		Partition partition = new Partition("sometopic",0);
+		Partition partition = new Partition("sometopic", 0);
 		StopWatch stopWatch = new StopWatch();
 		stopWatch.start();
-		for (long i=0; i<100000; i++) {
+		for (long i = 0; i < UPDATE_COUNT; i++) {
 			kafkaTopicOffsetManager.updateOffset(partition, i);
 		}
 		stopWatch.stop();
-		kafkaTopicOffsetManager.close();
-		System.out.println("KafkaTopicOffsetManager completed in " +  stopWatch.getTotalTimeSeconds() + "s");
+		kafkaTopicOffsetManager.destroy();
+		System.out.println("KafkaTopicOffsetManager completed in " + stopWatch.getTotalTimeSeconds() + "s");
 		kafkaTopicOffsetManager = new KafkaTopicOffsetManager(new ZookeeperConnect(embedded.getZookeeperConnectionString()), "zkTopic");
 		kafkaTopicOffsetManager.afterPropertiesSet();
 		Assert.assertThat(kafkaTopicOffsetManager.getOffset(partition), is(99999L));
 	}
+
+	@Test
+	public void topicManagerPerformanceTestsWithWindowing() throws Exception {
+		KafkaTopicOffsetManager kafkaTopicOffsetManager = new KafkaTopicOffsetManager(new ZookeeperConnect(embedded.getZookeeperConnectionString()), "zkTopic");
+		kafkaTopicOffsetManager.afterPropertiesSet();
+		WindowingOffsetManager offsetManager = new WindowingOffsetManager(kafkaTopicOffsetManager);
+		offsetManager.setTimespan(TIME_WINDOW);
+		offsetManager.afterPropertiesSet();
+		createTopic(embedded.getZkClient(), "sometopic", 1, 1, 1);
+		Partition partition = new Partition("sometopic", 0);
+		StopWatch stopWatch = new StopWatch();
+		stopWatch.start();
+		for (long i = 0; i < UPDATE_COUNT; i++) {
+			offsetManager.updateOffset(partition, i);
+		}
+		stopWatch.stop();
+		offsetManager.destroy();
+		System.out.println("KafkaTopicOffsetManager with windowing completed in " + stopWatch.getTotalTimeSeconds() + "s");
+		kafkaTopicOffsetManager = new KafkaTopicOffsetManager(new ZookeeperConnect(embedded.getZookeeperConnectionString()), "zkTopic");
+		kafkaTopicOffsetManager.afterPropertiesSet();
+		Assert.assertThat(kafkaTopicOffsetManager.getOffset(partition), is(99999L));
+	}
+
 
 	@Test
 	public void nativeManagerPerformanceTests() throws Exception {
@@ -88,15 +116,44 @@ public class OffsetManagerPerformanceTests {
 
 		StopWatch stopWatch = new StopWatch();
 		stopWatch.start();
-		for (long i=0; i<100000; i++) {
+		for (long i = 0; i < UPDATE_COUNT; i++) {
 			kafkaNativeOffsetManager.updateOffset(partition, i);
 		}
+		kafkaNativeOffsetManager.destroy();
 		stopWatch.stop();
-		System.out.println("KafkaNativeOffsetManager completed in " +  stopWatch.getTotalTimeSeconds() + "s");
+		System.out.println("KafkaNativeOffsetManager completed in " + stopWatch.getTotalTimeSeconds() + "s");
 		kafkaNativeOffsetManager = new KafkaNativeOffsetManager(
 				new DefaultConnectionFactory(new ZookeeperConfiguration(zookeeperConnect)), zookeeperConnect);
 		kafkaNativeOffsetManager.afterPropertiesSet();
 		Assert.assertThat(kafkaNativeOffsetManager.getOffset(partition), is(99999L));
+
+	}
+
+	@Test
+	public void nativeManagerPerformanceTestsWithWindowing() throws Exception {
+		String zookeeperConnectionString = embedded.getZookeeperConnectionString();
+		ZookeeperConnect zookeeperConnect = new ZookeeperConnect(zookeeperConnectionString);
+		KafkaNativeOffsetManager kafkaNativeOffsetManager = new KafkaNativeOffsetManager(
+				new DefaultConnectionFactory(new ZookeeperConfiguration(zookeeperConnect)), zookeeperConnect);
+		kafkaNativeOffsetManager.afterPropertiesSet();
+		WindowingOffsetManager offsetManager = new WindowingOffsetManager(kafkaNativeOffsetManager);
+		offsetManager.setTimespan(TIME_WINDOW);
+		offsetManager.afterPropertiesSet();
+		Partition partition = new Partition("sometopic", 0);
+		createTopic(embedded.getZkClient(), "sometopic", 1, 1, 1);
+
+		StopWatch stopWatch = new StopWatch();
+		stopWatch.start();
+		for (long i = 0; i < UPDATE_COUNT; i++) {
+			offsetManager.updateOffset(partition, i);
+		}
+		stopWatch.stop();
+		offsetManager.destroy();
+		System.out.println("KafkaNativeOffsetManager with windowing completed in " + stopWatch.getTotalTimeSeconds() + "s");
+		KafkaNativeOffsetManager secondaryOffsetManager = new KafkaNativeOffsetManager(
+				new DefaultConnectionFactory(new ZookeeperConfiguration(zookeeperConnect)), zookeeperConnect);
+		offsetManager.afterPropertiesSet();
+		Assert.assertThat(offsetManager.getOffset(partition), is(99999L));
 
 	}
 
